@@ -22,7 +22,7 @@ export default function CourseTable({
             Course List
           </div>
           <div className="text-xs text-slate-500">
-            Mock data · {courses.length} courses
+            {courses.length} courses
           </div>
         </div>
         <div className="text-xs text-slate-500">

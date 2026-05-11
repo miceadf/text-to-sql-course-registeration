@@ -9,8 +9,124 @@ type ChatMessage = {
   text: string
 }
 
+type QueryApiResponse = {
+  sql?: string
+  data?: unknown[]
+  warning?: string
+  error?: string
+}
+
+type QueryRow = Record<string, unknown>
+
 function makeId(prefix: string) {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`
+}
+
+function isQueryRow(value: unknown): value is QueryRow {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readString(row: QueryRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number') return String(value)
+  }
+  return ''
+}
+
+function readNumber(row: QueryRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return undefined
+}
+
+function normalizeDay(value: string): Course['slots'][number]['day'] | null {
+  const normalized = value.trim().toLowerCase()
+  if (['mon', 'monday', '월', '월요일'].includes(normalized)) return 'Mon'
+  if (['tue', 'tues', 'tuesday', '화', '화요일'].includes(normalized)) return 'Tue'
+  if (['wed', 'wednesday', '수', '수요일'].includes(normalized)) return 'Wed'
+  if (['thu', 'thur', 'thurs', 'thursday', '목', '목요일'].includes(normalized)) return 'Thu'
+  if (['fri', 'friday', '금', '금요일'].includes(normalized)) return 'Fri'
+  return null
+}
+
+function parseHour(value: string) {
+  const match = value.match(/\d{1,2}/)
+  if (!match) return null
+  const hour = Number(match[0])
+  return Number.isFinite(hour) ? hour : null
+}
+
+function parseSlots(timeText: string): Course['slots'] {
+  const slots: Course['slots'] = []
+  const parts = timeText.split(/[,;/]+/)
+
+  for (const part of parts) {
+    const match = part.match(
+      /(mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|월요일?|화요일?|수요일?|목요일?|금요일?)\s*[\s(]*([0-2]?\d)(?::\d{2})?\s*[-~]\s*([0-2]?\d)(?::\d{2})?/i,
+    )
+    if (!match) continue
+
+    const day = normalizeDay(match[1])
+    const startHour = parseHour(match[2])
+    const endHour = parseHour(match[3])
+    if (!day || startHour === null || endHour === null || endHour <= startHour) continue
+    slots.push({ day, startHour, endHour })
+  }
+
+  return slots
+}
+
+function rowToCourse(row: QueryRow, index: number): Course {
+  const subjectCode = readString(row, [
+    'subject_code',
+    'course_code',
+    'course_id',
+    'id',
+    'code',
+  ])
+  const section = readString(row, ['section', 'class_no', 'division'])
+  const id = subjectCode
+    ? section
+      ? `${subjectCode}-${section}`
+      : subjectCode
+    : `DB-${index + 1}`
+  const name =
+    readString(row, ['subject_name', 'course_name', 'name', 'title']) ||
+    `Course ${index + 1}`
+  const professor =
+    readString(row, ['professor', 'instructor', 'teacher', '교수']) || '-'
+  const credits = readNumber(row, ['credit_hours', 'credits', 'credit', '학점']) ?? 0
+  const timeText =
+    readString(row, ['lecture_time', 'time_text', 'schedule', 'time', '시간']) ||
+    'Time TBA'
+  const capacity = readNumber(row, ['capacity', '정원'])
+  const enrolled = readNumber(row, ['enrolled', 'registered', '수강인원'])
+  const status =
+    capacity !== undefined && enrolled !== undefined && enrolled >= capacity
+      ? 'Closed'
+      : 'Open'
+
+  return {
+    id,
+    name,
+    professor,
+    credits,
+    status,
+    timeText,
+    slots: parseSlots(timeText),
+  }
+}
+
+function rowsToCourses(rows: unknown[]) {
+  return rows.filter(isQueryRow).map(rowToCourse)
 }
 
 export default function ChatPopup({
@@ -40,6 +156,11 @@ export default function ChatPopup({
     },
   ])
   const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [lastSql, setLastSql] = useState('')
+  const [lastWarning, setLastWarning] = useState('')
+  const [lastError, setLastError] = useState('')
+  const [dbCourses, setDbCourses] = useState<Course[] | null>(null)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -73,34 +194,92 @@ export default function ChatPopup({
   const results = useMemo(() => {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.text ?? ''
     const q = lastUser.trim().toLowerCase()
-    if (!q) return allCourses.slice(0, 5)
-    const hits = allCourses.filter((c) => {
+    const sourceCourses = dbCourses ?? allCourses
+    if (dbCourses) return sourceCourses.slice(0, 6)
+    if (!q) return sourceCourses.slice(0, 5)
+    const hits = sourceCourses.filter((c) => {
       const hay = `${c.id} ${c.name} ${c.professor} ${c.timeText}`.toLowerCase()
       return hay.includes(q) || (q.includes('db') && hay.includes('database'))
     })
-    return (hits.length ? hits : allCourses.slice(0, 5)).slice(0, 6)
-  }, [allCourses, messages])
+    return (hits.length ? hits : sourceCourses.slice(0, 5)).slice(0, 6)
+  }, [allCourses, dbCourses, messages])
 
-  function send() {
+  async function send() {
     const text = input.trim()
-    if (!text) return
+    if (!text || loading) return
     setInput('')
+    setLastError('')
+    setLastWarning('')
+    setDbCourses(null)
 
     setMessages((prev) => [
       ...prev,
       { id: makeId('usr'), role: 'user', text },
     ])
 
-    window.setTimeout(() => {
+    setLoading(true)
+
+    try {
+      const res = await fetch('/api/v1/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: text }),
+      })
+      const payload = (await res.json()) as QueryApiResponse
+
+      if (!res.ok || payload.error) {
+        const errorText =
+          payload.error ??
+          `요청 처리에 실패했습니다. (${res.status})`
+        setLastError(errorText)
+        setDbCourses(null)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: makeId('sys'),
+            role: 'system',
+            text: `요청 실패: ${errorText}`,
+          },
+        ])
+        return
+      }
+
+      setLastSql(payload.sql ?? '')
+      setLastWarning(payload.warning ?? '')
+
+      const rowCount = Array.isArray(payload.data) ? payload.data.length : 0
+      const nextDbCourses =
+        !payload.warning && Array.isArray(payload.data)
+          ? rowsToCourses(payload.data)
+          : null
+      setDbCourses(nextDbCourses)
+      const summary = payload.warning
+        ? 'SQL 생성 완료 (DB 미연결로 결과 조회는 생략되었습니다).'
+        : `SQL 실행 완료: ${rowCount}건 결과를 받았습니다.`
+
       setMessages((prev) => [
         ...prev,
         {
           id: makeId('sys'),
           role: 'system',
-          text: '검색 결과: 데이터베이스 관련 강의 3개를 찾았습니다.',
+          text: summary,
         },
       ])
-    }, 450)
+    } catch {
+      const errorText = '백엔드 연결에 실패했습니다. 서버 실행 상태를 확인해주세요.'
+      setLastError(errorText)
+      setDbCourses(null)
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: makeId('sys'),
+          role: 'system',
+          text: `요청 실패: ${errorText}`,
+        },
+      ])
+    } finally {
+      setLoading(false)
+    }
   }
 
   if (!mounted) return null
@@ -185,16 +364,38 @@ export default function ChatPopup({
                   if (e.key === 'Enter') send()
                 }}
                 placeholder="e.g. 데이터베이스, 네트워크, ML..."
+                disabled={loading}
                 className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
               />
               <button
                 type="button"
                 onClick={send}
+                disabled={loading}
                 className="h-10 shrink-0 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 active:bg-blue-700"
               >
-                Send
+                {loading ? '...' : 'Send'}
               </button>
             </div>
+            {lastWarning && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {lastWarning}
+              </div>
+            )}
+            {lastError && (
+              <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {lastError}
+              </div>
+            )}
+            {lastSql && (
+              <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <div className="mb-1 text-[11px] font-semibold text-slate-600">
+                  Generated SQL
+                </div>
+                <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px] text-slate-700">
+                  {lastSql}
+                </pre>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-slate-200 px-4 py-3">

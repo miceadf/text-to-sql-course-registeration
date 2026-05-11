@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ChatPopup from '../components/ChatPopup'
 import CourseTable from '../components/CourseTable'
 import ExpandedTimetableModal from '../components/ExpandedTimetableModal'
 import Timetable from '../components/Timetable'
 import { mockCourses } from '../mock/courses'
+import { coursesApi } from '../services/api'
 import type { Course } from '../types/course'
 import { cn } from '../utils/cn'
+import { apiCourseToCourse } from '../utils/courseMapper'
 
 function ChatIcon({ className }: { className?: string }) {
   return (
@@ -32,11 +34,50 @@ function ChatIcon({ className }: { className?: string }) {
   )
 }
 
-export default function MainPage() {
-  const allCourses = mockCourses
+type MainPageProps = {
+  userName?: string
+  onLoginClick: () => void
+  onLogout: () => void
+}
+
+export default function MainPage({
+  userName,
+  onLoginClick,
+  onLogout,
+}: MainPageProps) {
+  const [allCourses, setAllCourses] = useState<Course[]>(mockCourses)
   const [popupOpen, setPopupOpen] = useState(false)
   const [expandedOpen, setExpandedOpen] = useState(false)
   const [selectedCourses, setSelectedCourses] = useState<Course[]>([])
+
+  useEffect(() => {
+    let disposed = false
+
+    async function loadCourses() {
+      try {
+        const result = await coursesApi.getCourses({
+          year: new Date().getFullYear(),
+          semester: '1',
+          page: 1,
+          pageSize: 200,
+        })
+        const courses = result.items.map(apiCourseToCourse)
+        if (!disposed && courses.length > 0) {
+          setAllCourses(courses)
+        }
+      } catch {
+        if (!disposed) {
+          setAllCourses(mockCourses)
+        }
+      }
+    }
+
+    void loadCourses()
+
+    return () => {
+      disposed = true
+    }
+  }, [])
 
   const selectedIds = useMemo(
     () => new Set(selectedCourses.map((c) => c.id)),
@@ -63,7 +104,7 @@ export default function MainPage() {
                 Course Registration
               </div>
               <div className="text-xs text-slate-500">
-                Main · mock UI only
+                Main course browser
               </div>
             </div>
           </div>
@@ -97,6 +138,30 @@ export default function MainPage() {
                 </svg>
               </div>
             </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {userName ? (
+              <>
+                <div className="hidden rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700 sm:block">
+                  {userName}
+                </div>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onLoginClick}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-700"
+              >
+                Login
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -188,4 +253,3 @@ export default function MainPage() {
     </div>
   )
 }
-
