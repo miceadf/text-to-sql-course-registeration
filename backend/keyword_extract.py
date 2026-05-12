@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -468,6 +469,31 @@ def preprocess_query(
 
 def extract_keywords(query: str, model_dir: str | Path = MODEL_DIR, max_length: int = 128) -> dict[str, Any]:
     return preprocess_query(query=query, model_dir=model_dir, max_length=max_length, fail_open=False)
+
+
+def warmup_keyword_normalizer() -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        predictor = get_predictor()
+        references = load_reference_values()
+        predictor.extract("컴융 데이터베이스 과목 보여줘")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "ok": True,
+            "elapsed_ms": elapsed_ms,
+            "device": predictor.device,
+            "reference_counts": {
+                label: len(values)
+                for label, values in references.items()
+            },
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "ok": False,
+            "elapsed_ms": elapsed_ms,
+            "error": str(exc),
+        }
 
 
 def main() -> None:

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pathlib import Path
 
+from .keyword_extract import warmup_keyword_normalizer
 from .llm import warmup_model
 from .process import process
 from .db import run_query
@@ -63,8 +64,11 @@ def health():
 
 @app.on_event("startup")
 def startup_warmup():
-    # Warm up local model once to reduce first-query latency.
-    app.state.warmup = warmup_model()
+    # Warm up local models once to reduce first-query latency.
+    app.state.warmup = {
+        "llm": warmup_model(),
+        "keyword_normalizer": warmup_keyword_normalizer(),
+    }
 
 
 @app.get("/api/v1/warmup")
