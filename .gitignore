@@ -37,6 +37,8 @@ env/
 *.pt
 *.pth
 *.onnx
+backend/course_custom_ner_model/models/course-custom-ner/checkpoint-*/
+!backend/course_custom_ner_model/models/course-custom-ner/model.safetensors
 
 # Editor directories and files
 .vscode/*
